@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>WebRTC 2 User Video</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+<h2>WebRTC Video Chat</h2>
+<div class="room-join" id="roomJoin">
+  <input type="text" id="usernameInput" placeholder="Enter your name" />
+  <input type="text" id="roomInput" placeholder="Enter room name" />
+  <button id="joinBtn" onclick="joinRoom()">Join Room</button>
+</div>
+<div class="controls" id="controls" style="display:none">
+  <div id="muteBtn" class="control-icon mic-on" onclick="toggleMute()" title="Mute">
+    <svg class="icon-on" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 16.91c-1.48 1.45-3.5 2.34-5.77 2.34-2.27 0-4.29-.89-5.77-2.34m8.54 0c.63.61.98 1.44.98 2.34 0 1.89-1.54 3.42-3.43 3.42S6.86 20.24 6.86 18.35c0-.9.35-1.73.98-2.34M12 20v3M9 20h6"/></svg>
+    <svg class="icon-off" style="display:none" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 16.91c-1.48 1.45-3.5 2.34-5.77 2.34-2.27 0-4.29-.89-5.77-2.34m8.54 0c.63.61.98 1.44.98 2.34 0 1.89-1.54 3.42-3.43 3.42S6.86 20.24 6.86 18.35c0-.9.35-1.73.98-2.34M12 20v3M9 20h6"/><line x1="2" y1="2" x2="22" y2="22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+  </div>
+  <div id="cameraBtn" class="control-icon camera-on" onclick="toggleCamera()" title="Turn Camera Off">
+    <svg class="icon-on" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+    <svg class="icon-off" style="display:none" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/><line x1="2" y1="2" x2="22" y2="22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+  </div>
+  <div id="endCallBtn" class="control-icon end-call" onclick="endCall()" title="End Call">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+  </div>
+</div>
+<div class="main-container" id="mainContainer" style="display:none">
+  <div class="video-container">
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <div class="chat-panel">
+      <div class="chat-header">Chat</div>
+      <div id="chatMessages" class="chat-messages"></div>
+      <div class="chat-input-container">
+        <input type="text" id="chatInput" class="chat-input" placeholder="Type a message..." onkeypress="handleChatKeypress(event)">
+        <button id="sendBtn" class="chat-send" onclick="sendChatMessage()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+// Restore room if user was previously in one
+const storedRoom = localStorage.getItem("currentRoom")
+const storedUsername = localStorage.getItem("currentUsername")
+
+if (storedRoom && storedUsername) {
+  // Hide join screen by modifying CSS before socket.io loads
+  const style = document.createElement("style")
+  style.id = "restoreStyle"
+  style.innerHTML = `
+    .room-join { display: none !important; }
+    .main-container { display: flex !important; }
+    .controls { display: flex !important; }
+  `
+  document.head.appendChild(style)
+}
+</script>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+<script>
+
+const socket = io("http://localhost:8000", {
+  reconnection: true,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  reconnectionAttempts: 5
+})
+
+const localVideo = document.getElementById("localVideo")
+
+let isDragging = false
+let room = null
+let joined = false
+let username = null
+let isRestoringRoom = false
+
+// Check localStorage immediately for room restoration
+if (storedRoom && storedUsername) {
+  room = storedRoom
+  username = storedUsername
+  isRestoringRoom = true
+}
+
+// Auto-restore room if it was stored
+socket.on("connect", () => {
+  if (isRestoringRoom && room && username) {
+    console.log("Reconnected to server, restoring room:", room)
+    // cleanup any previous session state
+    if (peer) {
+      peer.close()
+      peer = null
+    }
+    remoteVideo.srcObject = null
+    otherUser = null
+
+    socket.emit("join-room", { room, username })
+    joined = true
+    init().catch(console.error)
+  }
+})
+
+localVideo.addEventListener("mousedown", () => {
+  isDragging = true
+})
+
+document.addEventListener("mouseup", () => {
+  isDragging = false
+})
+
+document.addEventListener("mousemove", (e) => {
+  if(!isDragging) return
+
+  localVideo.style.left = e.pageX - 100 + "px"
+  localVideo.style.top = e.pageY - 70 + "px"
+})
+const remoteVideo = document.getElementById("remoteVideo")
+
+let localStream
+let peer
+let otherUser
+
+function joinRoom() {
+  const usernameInput = document.getElementById("usernameInput")
+  const roomInput = document.getElementById("roomInput")
+  username = usernameInput.value.trim()
+  room = roomInput.value.trim()
+  if (!username || !room) {
+    alert("Please enter your name and room name")
+    return
+  }
+
+  // if existing peer from previous session, clean it up
+  if (peer) {
+    peer.close()
+    peer = null
+  }
+  remoteVideo.srcObject = null
+  otherUser = null
+
+  // Store in localStorage for page refresh persistence
+  localStorage.setItem("currentRoom", room)
+  localStorage.setItem("currentUsername", username)
+  
+  socket.emit("join-room", { room, username })
+  document.querySelector(".room-join").style.display = "none"
+  document.getElementById("mainContainer").style.display = "flex"
+  document.getElementById("controls").style.display = "flex"
+  joined = true
+  init()
+}
+
+async function init() {
+
+localStream = await navigator.mediaDevices.getUserMedia({
+video: true,
+audio: true
+})
+
+localVideo.srcObject = localStream
+
+// Restore mic/camera state from localStorage
+const wasMicMuted = localStorage.getItem("isMicMuted") === "true"
+const wasCameraOff = localStorage.getItem("isCameraOff") === "true"
+
+if (wasMicMuted) {
+  localStream.getAudioTracks().forEach(track => track.enabled = false)
+  const muteBtn = document.getElementById("muteBtn")
+  muteBtn.classList.remove("mic-on")
+  muteBtn.classList.add("mic-off")
+  muteBtn.querySelector(".icon-on").style.display = "none"
+  muteBtn.querySelector(".icon-off").style.display = "block"
+  muteBtn.title = "Unmute"
+}
+
+if (wasCameraOff) {
+  localStream.getVideoTracks().forEach(track => track.enabled = false)
+  const cameraBtn = document.getElementById("cameraBtn")
+  cameraBtn.classList.remove("camera-on")
+  cameraBtn.classList.add("camera-off")
+  cameraBtn.querySelector(".icon-on").style.display = "none"
+  cameraBtn.querySelector(".icon-off").style.display = "block"
+  cameraBtn.title = "Turn Camera On"
+}
+
+}
+
+function createPeerConnection() {
+
+if (peer) {
+  peer.close()
+  remoteVideo.srcObject = null
+}
+  peer = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  })
+
+  // Add local tracks
+  localStream.getTracks().forEach(track => peer.addTrack(track, localStream))
+
+  // Remote stream handler
+  peer.ontrack = event => {
+    console.log("Remote track received", event.streams[0])
+    remoteVideo.srcObject = event.streams[0]
+  }
+
+  // ICE candidate handler
+  peer.onicecandidate = event => {
+    if(event.candidate){
+      console.log("Sending ICE candidate", event.candidate)
+      socket.emit("ice-candidate", { target: otherUser, candidate: event.candidate })
+    }
+  }
+
+}
+
+socket.on("ready", async userId => {
+
+otherUser = userId
+  console.log("Received ready, other user:", otherUser)
+  if (!localStream) await init()   // wait for local stream
+  
+  // Close old peer connection if exists
+  if (peer) {
+    peer.close()
+    remoteVideo.srcObject = null
+  }
+  
+  createPeerConnection()
+
+  // Only the user with lower ID creates the offer to avoid glare
+  if (socket.id < otherUser) {
+    const offer = await peer.createOffer()
+    console.log("Created offer", offer)
+    await peer.setLocalDescription(offer)
+    socket.emit("offer", { target: otherUser, sdp: offer })
+  }
+  
+  // Mark restoration as complete after first connection
+  isRestoringRoom = false
+
+})
+
+socket.on("offer", async data => {
+  console.log("Received offer from", data.sender)
+  otherUser = data.sender
+  if (!localStream) await init()
+  createPeerConnection()
+
+  await peer.setRemoteDescription(new RTCSessionDescription(data.sdp))
+  const answer = await peer.createAnswer()
+  console.log("Created answer", answer)
+  await peer.setLocalDescription(answer)
+
+  socket.emit("answer", { target: otherUser, sdp: answer })
+})
+
+socket.on("answer", async data => {
+  console.log("Received answer")
+await peer.setRemoteDescription(new RTCSessionDescription(data.sdp))
+
+})
+
+socket.on("ice-candidate", async data => {
+  console.log("Received ICE candidate", data.candidate)
+try{
+await peer.addIceCandidate(data.candidate)
+}catch(e){
+console.error(e)
+}
+
+})
+
+socket.on("disconnect", () => {
+  console.log("Disconnected from server")
+  // Reset peer connection
+  if (peer) {
+    peer.close()
+    peer = null
+  }
+  remoteVideo.srcObject = null
+  otherUser = null
+  
+  // If user was in a room and got disconnected accidentally, don't show join screen
+  if (joined && !isRestoringRoom) {
+    // User will auto-reconnect via socket.io reconnection
+  }
+})
+
+socket.on("peer-disconnected", () => {
+  console.log("Other user disconnected")
+  // Close peer connection and reset remote video
+  if (peer) {
+    peer.close()
+    peer = null
+  }
+  remoteVideo.srcObject = null
+  otherUser = null
+})
+
+socket.on("room-messages", (messages) => {
+  console.log("Received room messages:", messages)
+  console.log("Current username:", username)
+  messages.forEach(msg => {
+    console.log("Comparing:", msg.username, "===", username, "Result:", msg.username === username)
+    displayChatMessage(msg.message, msg.username === username ? "self" : "other", msg.timestamp)
+  })
+})
+
+socket.on("chat-message", (data) => {
+  console.log("Chat message received:", data)
+  console.log("Current username:", username, "Message username:", data.username)
+  if (data && data.message) {
+    const isSelf = data.username === username
+    console.log("Is self:", isSelf)
+    displayChatMessage(data.message, isSelf ? "self" : "other", data.timestamp)
+  }
+})
+
+function sendChatMessage() {
+  const input = document.getElementById("chatInput")
+  const message = input.value.trim()
+  
+  if (!message) return
+  
+  if (!joined || !room) {
+    alert("Please join a room first.")
+    return
+  }
+  
+  console.log("Sending message to room", room, ":", message)
+  
+  // Send to room
+  socket.emit("chat-message", {
+    room: room,
+    message: message,
+    username: username
+  })
+  
+  input.value = ""
+}
+
+function displayChatMessage(message, sender, timestamp) {
+  const chatMessages = document.getElementById("chatMessages")
+  const messageDiv = document.createElement("div")
+  messageDiv.className = `chat-message ${sender}`
+  messageDiv.innerHTML = `<span class="message-text">${escapeHtml(message)}</span><span class="message-time">${timestamp}</span>`
+  chatMessages.appendChild(messageDiv)
+  chatMessages.scrollTop = chatMessages.scrollHeight
+}
+
+function escapeHtml(text) {
+  const map = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  }
+  return text.replace(/[&<>"']/g, m => map[m])
+}
+
+function handleChatKeypress(event) {
+  if (event.key === "Enter") {
+    sendChatMessage()
+  }
+}
+
+function toggleMute() {
+  const muteBtn = document.getElementById("muteBtn")
+  const iconOn = muteBtn.querySelector(".icon-on")
+  const iconOff = muteBtn.querySelector(".icon-off")
+  if (localStream) {
+    localStream.getAudioTracks().forEach(track => {
+      track.enabled = !track.enabled
+      isAudioMuted = !track.enabled
+    })
+    // Save state to localStorage
+    localStorage.setItem("isMicMuted", isAudioMuted)
+    
+    if (isAudioMuted) {
+      muteBtn.classList.remove("mic-on")
+      muteBtn.classList.add("mic-off")
+      iconOn.style.display = "none"
+      iconOff.style.display = "block"
+      muteBtn.title = "Unmute"
+    } else {
+      muteBtn.classList.remove("mic-off")
+      muteBtn.classList.add("mic-on")
+      iconOn.style.display = "block"
+      iconOff.style.display = "none"
+      muteBtn.title = "Mute"
+    }
+  }
+}
+
+function toggleCamera() {
+  const cameraBtn = document.getElementById("cameraBtn")
+  const iconOn = cameraBtn.querySelector(".icon-on")
+  const iconOff = cameraBtn.querySelector(".icon-off")
+  if (localStream) {
+    localStream.getVideoTracks().forEach(track => {
+      track.enabled = !track.enabled
+      isCameraOff = !track.enabled
+    })
+    // Save state to localStorage
+    localStorage.setItem("isCameraOff", isCameraOff)
+    
+    if (isCameraOff) {
+      cameraBtn.classList.remove("camera-on")
+      cameraBtn.classList.add("camera-off")
+      iconOn.style.display = "none"
+      iconOff.style.display = "block"
+      cameraBtn.title = "Turn Camera On"
+    } else {
+      cameraBtn.classList.remove("camera-off")
+      cameraBtn.classList.add("camera-on")
+      iconOn.style.display = "block"
+      iconOff.style.display = "none"
+      cameraBtn.title = "Turn Camera Off"
+    }
+  }
+}
+
+function endCall() {
+  // Clear localStorage
+  localStorage.removeItem("currentRoom")
+  localStorage.removeItem("currentUsername")
+  localStorage.removeItem("isMicMuted")
+  localStorage.removeItem("isCameraOff")
+  
+  // Close peer connection
+  if (peer) {
+    peer.close()
+    peer = null
+  }
+  
+  // Stop local stream
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop())
+  }
+  
+  // Emit leave event to server
+  socket.emit("leave-room", { room })
+  
+  // Reset variables
+  room = null
+  username = null
+  joined = false
+  otherUser = null
+  remoteVideo.srcObject = null
+  
+  // Clear chat messages
+  document.getElementById("chatMessages").innerHTML = ""
+  
+  // Show room join screen
+  document.getElementById("roomJoin").style.display = "flex"
+  document.getElementById("mainContainer").style.display = "none"
+  document.getElementById("controls").style.display = "none"
+  // remove style injection if present
+  const rs = document.getElementById("restoreStyle")
+  if (rs) rs.remove()
+  
+  // Clear input fields
+  document.getElementById("usernameInput").value = ""
+  document.getElementById("roomInput").value = ""
+}
+
+</script>
+
+</body>
+</html>
